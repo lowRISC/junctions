@@ -1,4 +1,4 @@
-package zscale
+package bridge
 
 import Chisel._
 
