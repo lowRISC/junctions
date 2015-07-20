@@ -34,7 +34,10 @@ abstract trait HASTIConstants
   def dgate(valid: Bool, b: Bits) = Fill(b.getWidth, valid) & b
 }
 
-class HASTIMasterIO extends Bundle
+abstract class HASTIBundle extends Bundle with HASTIConstants
+abstract class HASTIModule extends Module with HASTIConstants
+
+class HASTIMasterIO extends HASTIBundle
 {
   val haddr     = UInt(OUTPUT, SZ_HADDR)
   val hwrite    = Bool(OUTPUT)
@@ -51,7 +54,7 @@ class HASTIMasterIO extends Bundle
   val hresp  = UInt(INPUT, SZ_HRESP)
 }
 
-class HASTISlaveIO extends Bundle
+class HASTISlaveIO extends HASTIBundle
 {
   val haddr     = UInt(INPUT, SZ_HADDR)
   val hwrite    = Bool(INPUT)
@@ -70,7 +73,7 @@ class HASTISlaveIO extends Bundle
   val hresp     = UInt(OUTPUT, SZ_HRESP)
 }
 
-class HASTIBus(amap: Seq[UInt=>Bool]) extends Module
+class HASTIBus(amap: Seq[UInt=>Bool]) extends HASTIModule
 {
   val io = new Bundle {
     val master = new HASTIMasterIO().flip
@@ -106,7 +109,7 @@ class HASTIBus(amap: Seq[UInt=>Bool]) extends Module
   io.master.hresp := Mux1H(s1_hsels, io.slaves.map(_.hresp))
 }
 
-class HASTISlaveMux(n: Int) extends Module
+class HASTISlaveMux(n: Int) extends HASTIModule
 {
   val io = new Bundle {
     val ins = Vec.fill(n){new HASTISlaveIO}
@@ -168,7 +171,7 @@ class HASTISlaveMux(n: Int) extends Module
   } }
 }
 
-class HASTIXbar(n: Int, amap: Seq[UInt=>Bool]) extends Module
+class HASTIXbar(n: Int, amap: Seq[UInt=>Bool]) extends HASTIModule
 {
   val io = new Bundle {
     val masters = Vec.fill(n){new HASTIMasterIO}.flip
@@ -183,7 +186,7 @@ class HASTIXbar(n: Int, amap: Seq[UInt=>Bool]) extends Module
   (io.slaves zip muxes.map(_.out)) foreach { case (s, x) => s <> x }
 }
 
-class HASTISlaveToMaster extends Module
+class HASTISlaveToMaster extends HASTIModule
 {
   val io = new Bundle {
     val in = new HASTISlaveIO

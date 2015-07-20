@@ -8,7 +8,10 @@ abstract trait POCIConstants
   val SZ_PDATA = 32
 }
 
-class POCIIO extends Bundle
+abstract class POCIBundle extends Bundle with POCIConstants
+abstract class POCIModule extends Module with POCIConstants
+
+class POCIIO extends POCIBundle
 {
   val paddr = UInt(OUTPUT, SZ_PADDR)
   val pwrite = Bool(OUTPUT)
@@ -20,7 +23,7 @@ class POCIIO extends Bundle
   val pslverr = Bool(INPUT)
 }
 
-class HASTItoPOCIBridge extends Module
+class HASTItoPOCIBridge extends POCIModule
 {
   val io = new Bundle {
     val in = new HASTISlaveIO
@@ -37,7 +40,7 @@ class HASTItoPOCIBridge extends Module
   io.in.hresp := io.out.pslverr
 }
 
-class POCIBus(amap: Seq[UInt=>Bool]) extends Module
+class POCIBus(amap: Seq[UInt=>Bool]) extends POCIModule
 {
   val io = new Bundle {
     val master = new POCIIO().flip
