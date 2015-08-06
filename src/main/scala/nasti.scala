@@ -149,3 +149,70 @@ class MemIONASTISlaveIOConverter(cacheBlockOffsetBits: Int) extends MIFModule wi
   io.nasti.r.bits.resp := UInt(0)
   io.mem.resp.ready := io.nasti.r.ready
 }
+
+class NASTIArbiter(val arbN: Int) extends NASTIModule {
+  val io = new Bundle {
+    val master = Vec.fill(arbN) { new NASTISlaveIO }
+    val slave = new NASTIMasterIO
+  }
+
+  if (arbN > 1) {
+    val arbIdBits = log2Up(arbN)
+
+    val ar_arb = Module(new RRArbiter(new NASTIReadAddressChannel, arbN))
+    val aw_arb = Module(new RRArbiter(new NASTIWriteAddressChannel, arbN))
+
+    val slave_r_arb_id = io.slave.r.bits.id(arbIdBits - 1, 0)
+    val slave_b_arb_id = io.slave.b.bits.id(arbIdBits - 1, 0)
+
+    val w_chosen = Reg(UInt(width = arbIdBits))
+    val w_done = Reg(init = Bool(true))
+
+    when (aw_arb.io.out.fire()) {
+      w_chosen := aw_arb.io.chosen
+      w_done := Bool(false)
+    }
+
+    when (io.slave.w.fire() && io.slave.w.bits.last) {
+      w_done := Bool(true)
+    }
+
+    val w_queues = Vec(io.master.map(m => Queue(m.w, 1, true)))
+
+    for (i <- 0 until arbN) {
+      val m_ar = io.master(i).ar
+      val m_aw = io.master(i).aw
+      val m_r = io.master(i).r
+      val m_b = io.master(i).b
+      val a_ar = ar_arb.io.in(i)
+      val a_aw = aw_arb.io.in(i)
+
+      a_ar <> m_ar
+      a_ar.bits.id := Cat(m_ar.bits.id, UInt(i, arbIdBits))
+
+      a_aw <> m_aw
+      a_aw.bits.id := Cat(m_aw.bits.id, UInt(i, arbIdBits))
+
+      m_r.valid := io.slave.r.valid && slave_r_arb_id === UInt(i)
+      m_r.bits := io.slave.r.bits
+      m_r.bits.id := io.slave.r.bits.id >> UInt(arbIdBits)
+
+      m_b.valid := io.slave.b.valid && slave_b_arb_id === UInt(i)
+      m_b.bits := io.slave.b.bits
+      m_b.bits.id := io.slave.b.bits.id >> UInt(arbIdBits)
+
+      w_queues(i).ready := io.slave.w.ready && w_chosen === UInt(i)
+    }
+
+    io.slave.r.ready := io.master(slave_r_arb_id).r.ready
+    io.slave.b.ready := io.master(slave_b_arb_id).b.ready
+
+    io.slave.w.bits := w_queues(w_chosen).bits
+    io.slave.w.valid := w_queues(w_chosen).valid
+
+    io.slave.ar <> ar_arb.io.out
+    io.slave.aw <> aw_arb.io.out
+    aw_arb.io.out.ready := io.slave.aw.ready && w_done
+
+  } else { io.slave <> io.master.head }
+}
