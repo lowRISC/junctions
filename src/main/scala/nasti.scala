@@ -3,6 +3,7 @@
 package junctions
 import Chisel._
 import scala.math.max
+import scala.collection.mutable.ArraySeq
 
 case object NASTIDataBits extends Field[Int]
 case object NASTIAddrBits extends Field[Int]
@@ -177,8 +178,6 @@ class NASTIArbiter(val arbN: Int) extends NASTIModule {
       w_done := Bool(true)
     }
 
-    val w_queues = Vec(io.master.map(m => Queue(m.w, 1, true)))
-
     for (i <- 0 until arbN) {
       val m_ar = io.master(i).ar
       val m_aw = io.master(i).aw
@@ -186,6 +185,7 @@ class NASTIArbiter(val arbN: Int) extends NASTIModule {
       val m_b = io.master(i).b
       val a_ar = ar_arb.io.in(i)
       val a_aw = aw_arb.io.in(i)
+      val m_w = io.master(i).w
 
       a_ar <> m_ar
       a_ar.bits.id := Cat(m_ar.bits.id, UInt(i, arbIdBits))
@@ -201,18 +201,246 @@ class NASTIArbiter(val arbN: Int) extends NASTIModule {
       m_b.bits := io.slave.b.bits
       m_b.bits.id := io.slave.b.bits.id >> UInt(arbIdBits)
 
-      w_queues(i).ready := io.slave.w.ready && w_chosen === UInt(i)
+      m_w.ready := io.slave.w.ready && w_chosen === UInt(i) && !w_done
     }
 
     io.slave.r.ready := io.master(slave_r_arb_id).r.ready
     io.slave.b.ready := io.master(slave_b_arb_id).b.ready
 
-    io.slave.w.bits := w_queues(w_chosen).bits
-    io.slave.w.valid := w_queues(w_chosen).valid
+    io.slave.w.bits := io.master(w_chosen).w.bits
+    io.slave.w.valid := io.master(w_chosen).w.valid && !w_done
 
     io.slave.ar <> ar_arb.io.out
     io.slave.aw <> aw_arb.io.out
     aw_arb.io.out.ready := io.slave.aw.ready && w_done
 
   } else { io.slave <> io.master.head }
+}
+
+// TODO: More efficient implementation a/la Chisel Stdlib
+class NASTIReadDataArbiter(arbN: Int) extends NASTIModule {
+  val io = new Bundle {
+    val in = Vec.fill(arbN) { Decoupled(new NASTIReadDataChannel) }.flip
+    val out = Decoupled(new NASTIReadDataChannel)
+  }
+
+  val counter = Counter(arbN)
+  val choice = counter.value
+  val locked = Reg(init = Bool(false))
+
+  for (i <- 0 until arbN) {
+    io.in(i).ready := io.out.ready && choice === UInt(i)
+  }
+
+  io.out.valid := io.in(choice).valid
+  io.out.bits := io.in(choice).bits
+
+  when (io.out.fire()) {
+    when (io.out.bits.last) {
+      locked := Bool(false)
+    } .otherwise {
+      locked := Bool(true)
+    }
+  } .elsewhen (!locked) {
+    counter.inc()
+  }
+}
+
+class NASTIRouter(addrmap: Seq[(Int, Int)]) extends NASTIModule {
+  val nSlaves = addrmap.size
+
+  val io = new Bundle {
+    val master = new NASTISlaveIO
+    val slave = Vec.fill(nSlaves) { new NASTIMasterIO }
+  }
+
+  var ar_ready = Bool(false)
+  var aw_ready = Bool(false)
+  var w_ready = Bool(false)
+
+  addrmap.zip(io.slave).zipWithIndex.foreach { case (((base, size), s), i) =>
+    val offset = log2Up(size)
+    val regionId = base >> offset
+
+    require(isPow2(size))
+    require(base % size == 0)
+
+    val ar_reg_addr = io.master.ar.bits.addr(nastiXAddrBits - 1, offset)
+    val ar_match = ar_reg_addr === UInt(regionId)
+
+    s.ar.valid := io.master.ar.valid && ar_match
+    s.ar.bits := io.master.ar.bits
+    ar_ready = ar_ready || (s.ar.ready && ar_match)
+
+    val aw_reg_addr = io.master.aw.bits.addr(nastiXAddrBits - 1, offset)
+    val aw_match = aw_reg_addr === UInt(regionId)
+
+    s.aw.valid := io.master.aw.valid && aw_match
+    s.aw.bits := io.master.aw.bits
+    aw_ready = aw_ready || (s.aw.ready && aw_match)
+
+    val chosen = Reg(init = Bool(false))
+    when (s.aw.fire()) { chosen := Bool(true) }
+    when (s.w.fire() && s.w.bits.last) { chosen := Bool(false) }
+
+    s.w.valid := io.master.w.valid && chosen
+    s.w.bits := io.master.w.bits
+    w_ready = w_ready || (s.w.ready && chosen)
+  }
+
+  io.master.ar.ready := ar_ready
+  io.master.aw.ready := aw_ready
+  io.master.w.ready := w_ready
+
+  val b_arb = Module(new RRArbiter(new NASTIWriteResponseChannel, nSlaves))
+  val r_arb = Module(new NASTIReadDataArbiter(nSlaves))
+
+  b_arb.io.in <> io.slave.map(s => s.b)
+  r_arb.io.in <> io.slave.map(s => s.r)
+
+  io.master.b <> b_arb.io.out
+  io.master.r <> r_arb.io.out
+}
+
+class NASTICrossbar(nMasters: Int, nSlaves: Int, addrmap: Seq[(Int, Int)])
+    extends NASTIModule {
+  val io = new Bundle {
+    val masters = Vec.fill(nMasters) { new NASTISlaveIO }
+    val slaves = Vec.fill(nSlaves) { new NASTIMasterIO }
+  }
+
+  val routers = Vec.fill(nMasters) { Module(new NASTIRouter(addrmap)).io }
+  val arbiters = Vec.fill(nSlaves) { Module(new NASTIArbiter(nMasters)).io }
+
+  for (i <- 0 until nMasters) {
+    routers(i).master <> io.masters(i)
+  }
+
+  for (i <- 0 until nSlaves) {
+    arbiters(i).master <> Vec(routers.map(r => r.slave(i)))
+    io.slaves(i) <> arbiters(i).slave
+  }
+}
+
+case object NASTINMasters extends Field[Int]
+case object NASTINSlaves extends Field[Int]
+
+object AddrMapTypes {
+  type AddrMapEntry = (String, Option[Int], MemRegion)
+  type AddrMap = Seq[AddrMapEntry]
+}
+import AddrMapTypes._
+
+abstract class MemRegion
+
+case class MemSize(size: Int) extends MemRegion
+case class MemSubmap(entries: AddrMap) extends MemRegion
+
+object Submap {
+  def apply(entries: AddrMapEntry*) =
+    new MemSubmap(entries)
+}
+
+case object NASTIAddrMap extends Field[AddrMap]
+
+class NASTIInterconnectIO(val nMasters: Int, val nSlaves: Int) extends Bundle {
+  /* This is a bit confusing. The interconnect is a slave to the masters and
+   * a master to the slaves. Hence why the declarations seem to be backwards. */
+  val masters = Vec.fill(nMasters) { new NASTISlaveIO }
+  val slaves = Vec.fill(nSlaves) { new NASTIMasterIO }
+  override def cloneType =
+    new NASTIInterconnectIO(nMasters, nSlaves).asInstanceOf[this.type]
+}
+
+abstract class NASTIInterconnect extends NASTIModule {
+  val nMasters: Int
+  val nSlaves: Int
+
+  lazy val io = new NASTIInterconnectIO(nMasters, nSlaves)
+}
+
+case object BuildNASTI extends Field[() => NASTIInterconnect]
+
+class NASTIRecursiveInterconnect(
+    val nMasters: Int, val nSlaves: Int,
+    base: Int, addrmap: AddrMap) extends NASTIInterconnect {
+
+  private def regionSize(region: MemRegion): Int = {
+    val size = region match {
+      case MemSize(size) => size
+      case MemSubmap(submap) => submap.map {
+        case (_, _, region) => regionSize(region)
+      }.reduceLeft(_ + _)
+    }
+    (1 << log2Up(size))
+  }
+
+  private def mapCountSlaves(addrmap: AddrMap): Int = {
+    addrmap.map {
+      case (_, _, MemSize(_)) => 1
+      case (_, _, MemSubmap(submap)) => mapCountSlaves(submap)
+    }.reduceLeft(_ + _)
+  }
+
+  var lastEnd = base
+  var slaveInd = 0
+  val levelSize = addrmap.size
+
+  val realAddrMap = new ArraySeq[(Int, Int)](addrmap.size)
+
+  addrmap.zipWithIndex.foreach { case ((_, startOpt, region), i) =>
+    val start = startOpt.getOrElse(lastEnd)
+    val size = regionSize(region)
+    realAddrMap(i) = (start, size)
+    lastEnd = start + size
+  }
+
+  val flatSlaves = if (nMasters > 1) {
+    val xbar = Module(new NASTICrossbar(nMasters, levelSize, realAddrMap))
+    xbar.io.masters <> io.masters
+    xbar.io.slaves
+  } else {
+    val router = Module(new NASTIRouter(realAddrMap))
+    router.io.master <> io.masters.head
+    router.io.slave
+  }
+
+  addrmap.zip(realAddrMap).zipWithIndex.foreach {
+    case (((_, _, region), (start, size)), i) => {
+      region match {
+        case MemSize(_) =>
+          io.slaves(slaveInd) <> flatSlaves(i)
+          slaveInd += 1
+        case MemSubmap(submap) =>
+          val subSlaves = mapCountSlaves(submap)
+          val ic = Module(new NASTIRecursiveInterconnect(
+            1, subSlaves, start, submap))
+          ic.io.masters.head <> flatSlaves(i)
+          io.slaves.drop(slaveInd).take(subSlaves).zip(ic.io.slaves).foreach {
+            case (s, m) => s <> m
+          }
+          slaveInd += subSlaves
+      }
+    }
+  }
+}
+
+class NASTITopInterconnect extends NASTIInterconnect {
+  val nMasters = params(NASTINMasters)
+  val nSlaves = params(NASTINSlaves)
+
+  val temp = Module(new NASTIRecursiveInterconnect(
+    nMasters, nSlaves, 0, params(NASTIAddrMap)))
+
+  temp.io.masters.zip(io.masters).foreach { case (t, i) =>
+    t.ar <> i.ar
+    t.aw <> i.aw
+    // this queue is necessary to break up the aw - w dependence
+    // introduced by the TileLink -> NASTI converter
+    t.w <> Queue(i.w)
+    i.b <> t.b
+    i.r <> t.r
+  }
+  //temp.io.masters <> io.masters
+  io.slaves <> temp.io.slaves
 }
