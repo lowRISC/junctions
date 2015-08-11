@@ -354,24 +354,34 @@ object Submap {
     new MemSubmap(entries)
 }
 
-class PortMap(addrmap: AddrMap) {
-  val mapping = new HashMap[String, Int]
+case class AddrHashMapEntry(port: Int, start: Int, size: Int)
 
-  private def genPairs(addrmap: AddrMap): Seq[(String, Int)] = {
+class AddrHashMap(addrmap: AddrMap) {
+  val mapping = new HashMap[String, AddrHashMapEntry]
+
+  private def genPairs(addrmap: AddrMap): Seq[(String, AddrHashMapEntry)] = {
     var ind = 0
-    var pairs = Seq[(String, Int)]()
+    var base = 0
+    var pairs = Seq[(String, AddrHashMapEntry)]()
     addrmap.foreach { case (name, _, region) =>
       region match {
-        case MemSize(_) => {
-          pairs = (name, ind) +: pairs
+        case MemSize(size) => {
+          val trueSize = if (isPow2(size)) size else (1 << log2Ceil(size))
+          pairs = (name, AddrHashMapEntry(ind, base, trueSize)) +: pairs
+          base += trueSize
           ind += 1
         }
         case MemSubmap(submap) => {
           val subpairs = genPairs(submap).map {
-            case (subname, subind) => (name + ":" + subname, ind + subind)
+            case (subname, AddrHashMapEntry(subind, subbase, size)) =>
+              (name + ":" + subname,
+                AddrHashMapEntry(ind + subind, base + subbase, size))
           }
+          val subsize = subpairs.map(_._2.size).reduce(_ + _)
+          val truesize = if (isPow2(subsize)) subsize else (1 << log2Ceil(subsize))
           pairs = subpairs ++ pairs
           ind += subpairs.size
+          base += truesize
         }
       }
     }
@@ -380,12 +390,19 @@ class PortMap(addrmap: AddrMap) {
 
   for ((name, ind) <- genPairs(addrmap)) { mapping(name) = ind }
 
-  def apply(name: String): Int = mapping(name)
-  def get(name: String): Option[Int] = mapping.get(name)
-  def getOrElse(name: String, default: Int): Int = mapping.getOrElse(name, default)
+  def apply(name: String): AddrHashMapEntry = mapping(name)
+  def get(name: String): Option[AddrHashMapEntry] = mapping.get(name)
+  def sortedEntries(): Seq[(String, Int, Int)] = {
+    val arr = new Array[(String, Int, Int)](mapping.size)
+    mapping.foreach { case (name, AddrHashMapEntry(port, base, size)) =>
+      arr(port) = (name, base, size)
+    }
+    arr.toSeq
+  }
 }
 
 case object NASTIAddrMap extends Field[AddrMap]
+case object NASTIAddrHashMap extends Field[AddrHashMap]
 
 class NASTIInterconnectIO(val nMasters: Int, val nSlaves: Int) extends Bundle {
   /* This is a bit confusing. The interconnect is a slave to the masters and
