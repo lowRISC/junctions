@@ -225,25 +225,37 @@ class NASTIReadDataArbiter(arbN: Int) extends NASTIModule {
     val out = Decoupled(new NASTIReadDataChannel)
   }
 
-  val counter = Counter(arbN)
-  val choice = counter.value
-  val locked = Reg(init = Bool(false))
-
-  for (i <- 0 until arbN) {
-    io.in(i).ready := io.out.ready && choice === UInt(i)
+  def rotateLeft[T <: Data](norm: Vec[T], rot: UInt): Vec[T] = {
+    val n = norm.size
+    Vec.tabulate(n) { i =>
+      Mux(rot < UInt(n - i), norm(UInt(i) + rot), norm(rot - UInt(n - i)))
+    }
   }
 
-  io.out.valid := io.in(choice).valid
-  io.out.bits := io.in(choice).bits
+  val lockIdx = Reg(init = UInt(0, log2Up(arbN)))
+  val locked = Reg(init = Bool(false))
+
+  // use rotation to give priority to the input after the last one granted
+  val choice = PriorityMux(
+    rotateLeft(Vec(io.in.map(_.valid)), lockIdx + UInt(1)),
+    rotateLeft(Vec((0 until arbN).map(UInt(_))), lockIdx + UInt(1)))
+
+  val chosen = Mux(locked, lockIdx, choice)
+
+  for (i <- 0 until arbN) {
+    io.in(i).ready := io.out.ready && chosen === UInt(i)
+  }
+
+  io.out.valid := io.in(chosen).valid
+  io.out.bits := io.in(chosen).bits
 
   when (io.out.fire()) {
-    when (io.out.bits.last) {
+    when (!locked) {
+      lockIdx := choice
+      locked := !io.out.bits.last
+    } .elsewhen (io.out.bits.last) {
       locked := Bool(false)
-    } .otherwise {
-      locked := Bool(true)
     }
-  } .elsewhen (!locked) {
-    counter.inc()
   }
 }
 
