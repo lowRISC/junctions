@@ -1,9 +1,10 @@
-// See LICENSE for license details.
+/// See LICENSE for license details.
 
 package junctions
 import Chisel._
 import scala.math.max
 import scala.collection.mutable.ArraySeq
+import scala.collection.mutable.HashMap
 
 case object NASTIDataBits extends Field[Int]
 case object NASTIAddrBits extends Field[Int]
@@ -259,7 +260,7 @@ class NASTIRouter(addrmap: Seq[(Int, Int)]) extends NASTIModule {
   var w_ready = Bool(false)
 
   addrmap.zip(io.slave).zipWithIndex.foreach { case (((base, size), s), i) =>
-    val offset = log2Up(size)
+    val offset = log2Floor(size)
     val regionId = base >> offset
 
     require(isPow2(size))
@@ -341,6 +342,37 @@ object Submap {
     new MemSubmap(entries)
 }
 
+class PortMap(addrmap: AddrMap) {
+  val mapping = new HashMap[String, Int]
+
+  private def genPairs(addrmap: AddrMap): Seq[(String, Int)] = {
+    var ind = 0
+    var pairs = Seq[(String, Int)]()
+    addrmap.foreach { case (name, _, region) =>
+      region match {
+        case MemSize(_) => {
+          pairs = (name, ind) +: pairs
+          ind += 1
+        }
+        case MemSubmap(submap) => {
+          val subpairs = genPairs(submap).map {
+            case (subname, subind) => (name + ":" + subname, ind + subind)
+          }
+          pairs = subpairs ++ pairs
+          ind += subpairs.size
+        }
+      }
+    }
+    pairs
+  }
+
+  for ((name, ind) <- genPairs(addrmap)) { mapping(name) = ind }
+
+  def apply(name: String): Int = mapping(name)
+  def get(name: String): Option[Int] = mapping.get(name)
+  def getOrElse(name: String, default: Int): Int = mapping.getOrElse(name, default)
+}
+
 case object NASTIAddrMap extends Field[AddrMap]
 
 class NASTIInterconnectIO(val nMasters: Int, val nSlaves: Int) extends Bundle {
@@ -372,7 +404,7 @@ class NASTIRecursiveInterconnect(
         case (_, _, region) => regionSize(region)
       }.reduceLeft(_ + _)
     }
-    (1 << log2Up(size))
+    if (isPow2(size)) size else (1 << log2Ceil(size))
   }
 
   private def mapCountSlaves(addrmap: AddrMap): Int = {
