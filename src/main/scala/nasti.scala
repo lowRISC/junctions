@@ -272,21 +272,20 @@ class NASTIRouter(addrmap: Seq[(Int, Int)]) extends NASTIModule {
   var w_ready = Bool(false)
 
   addrmap.zip(io.slave).zipWithIndex.foreach { case (((base, size), s), i) =>
-    val offset = log2Floor(size)
-    val regionId = base >> offset
+    val bound = base + size
 
     require(isPow2(size))
     require(base % size == 0)
 
-    val ar_reg_addr = io.master.ar.bits.addr(nastiXAddrBits - 1, offset)
-    val ar_match = ar_reg_addr === UInt(regionId)
+    val ar_addr = io.master.ar.bits.addr
+    val ar_match = ar_addr >= UInt(base) && ar_addr < UInt(bound)
 
     s.ar.valid := io.master.ar.valid && ar_match
     s.ar.bits := io.master.ar.bits
     ar_ready = ar_ready || (s.ar.ready && ar_match)
 
-    val aw_reg_addr = io.master.aw.bits.addr(nastiXAddrBits - 1, offset)
-    val aw_match = aw_reg_addr === UInt(regionId)
+    val aw_addr = io.master.aw.bits.addr
+    val aw_match = aw_addr >= UInt(base) && aw_addr < UInt(bound)
 
     s.aw.valid := io.master.aw.valid && aw_match
     s.aw.bits := io.master.aw.bits
