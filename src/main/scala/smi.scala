@@ -94,9 +94,6 @@ class SMIIONASTIReadIOConverter(val dataWidth: Int, val addrWidth: Int)
   private val byteOffBits = log2Up(dataWidth / 8)
   private val addrOffBits = addrWidth + byteOffBits
 
-  assert(!io.ar.valid || io.ar.bits.size >= UInt(byteOffBits),
-    "NASTI size must be >= SMI size")
-
   private def calcWordCount(size: UInt): UInt =
     (UInt(1) << (size - UInt(byteOffBits))) - UInt(1)
 
@@ -108,6 +105,7 @@ class SMIIONASTIReadIOConverter(val dataWidth: Int, val addrWidth: Int)
   val addr = Reg(UInt(width = addrWidth))
   val id = Reg(UInt(width = nastiRIdBits))
 
+  val byteOff = Reg(UInt(width = byteOffBits))
   val sendInd = Reg(init = UInt(0, wordCountBits))
   val recvInd = Reg(init = UInt(0, wordCountBits))
   val sendDone = Reg(init = Bool(false))
@@ -129,7 +127,13 @@ class SMIIONASTIReadIOConverter(val dataWidth: Int, val addrWidth: Int)
   io.r.bits.last := (nBeats === UInt(0))
 
   when (io.ar.fire()) {
-    nWords := calcWordCount(io.ar.bits.size)
+    when (io.ar.bits.size < UInt(byteOffBits)) {
+      nWords := UInt(0)
+      byteOff := io.ar.bits.addr(byteOffBits - 1, 0)
+    } .otherwise {
+      nWords := calcWordCount(io.ar.bits.size)
+      byteOff := UInt(0)
+    }
     nBeats := io.ar.bits.len
     addr := io.ar.bits.addr(addrOffBits - 1, byteOffBits)
     id := io.ar.bits.id
@@ -144,7 +148,7 @@ class SMIIONASTIReadIOConverter(val dataWidth: Int, val addrWidth: Int)
 
   when (io.smi.resp.fire()) {
     recvInd := recvInd + UInt(1)
-    buffer(recvInd) := io.smi.resp.bits
+    buffer(recvInd) := io.smi.resp.bits >> Cat(byteOff, UInt(0, 3))
     when (recvInd === nWords) { state := s_resp }
   }
 
