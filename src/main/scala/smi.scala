@@ -40,13 +40,13 @@ class SMIMem(val dataWidth: Int, val memDepth: Int) extends SMIPeripheral {
 
   when (wen) { mem.write(io.req.bits.addr, io.req.bits.data) }
 
-  val read_busy = Reg(init = Bool(false))
+  val resp_valid = Reg(init = Bool(false))
 
-  when (io.resp.fire()) { read_busy := Bool(false) }
-  when (ren) { read_busy := Bool(true) }
+  when (io.resp.fire()) { resp_valid := Bool(false) }
+  when (io.req.fire())  { resp_valid := Bool(true) }
 
-  io.resp.valid := read_busy
-  io.req.ready := !read_busy || io.resp.ready
+  io.resp.valid := resp_valid
+  io.req.ready := !resp_valid
 }
 
 class SMIArbiter(val n: Int, val dataWidth: Int, val addrWidth: Int)
@@ -56,22 +56,22 @@ class SMIArbiter(val n: Int, val dataWidth: Int, val addrWidth: Int)
     val out = new SMIIO(dataWidth, addrWidth)
   }
 
-  val reading = Reg(init = Bool(false))
+  val wait_resp = Reg(init = Bool(false))
   val choice = Reg(UInt(width = log2Up(n)))
 
   val req_arb = Module(new RRArbiter(new SMIReq(dataWidth, addrWidth), n))
   req_arb.io.in <> io.in.map(_.req)
-  req_arb.io.out.ready := io.out.req.ready && !reading
+  req_arb.io.out.ready := io.out.req.ready && !wait_resp
 
   io.out.req.bits := req_arb.io.out.bits
-  io.out.req.valid := req_arb.io.out.valid && !reading
+  io.out.req.valid := req_arb.io.out.valid && !wait_resp
 
-  when (io.out.req.fire() && !io.out.req.bits.rw) {
+  when (io.out.req.fire()) {
     choice := req_arb.io.chosen
-    reading := Bool(true)
+    wait_resp := Bool(true)
   }
 
-  when (io.out.resp.fire()) { reading := Bool(false) }
+  when (io.out.resp.fire()) { wait_resp := Bool(false) }
 
   for ((resp, i) <- io.in.map(_.resp).zipWithIndex) {
     resp.bits := io.out.resp.bits
@@ -196,7 +196,7 @@ class SMIIONASTIWriteIOConverter(val dataWidth: Int, val addrWidth: Int)
   val data = Reg(UInt(width = nastiXDataBits))
   val last = Reg(Bool())
 
-  val s_idle :: s_data :: s_send :: s_resp :: Nil = Enum(Bits(), 4)
+  val s_idle :: s_data :: s_send :: s_ack :: s_resp :: Nil = Enum(Bits(), 5)
   val state = Reg(init = s_idle)
 
   io.aw.ready := (state === s_idle)
@@ -205,6 +205,7 @@ class SMIIONASTIWriteIOConverter(val dataWidth: Int, val addrWidth: Int)
   io.smi.req.bits.rw := Bool(true)
   io.smi.req.bits.addr := addr
   io.smi.req.bits.data := data(dataWidth - 1, 0)
+  io.smi.resp.ready := (state === s_ack)
   io.b.valid := (state === s_resp)
   io.b.bits.resp := Bits(0)
   io.b.bits.id := id
@@ -230,13 +231,15 @@ class SMIIONASTIWriteIOConverter(val dataWidth: Int, val addrWidth: Int)
 
   when (state === s_send) {
     when (strb === UInt(0)) {
-      state := Mux(last, s_resp, s_data)
+      state := Mux(last, s_ack, s_data)
     } .elsewhen (io.smi.req.ready || !strb(0)) {
       strb := strb >> jump
       data := data >> Cat(jump, UInt(0, log2Up(dataWidth)))
       addr := addr + jump
     }
   }
+
+  when (io.smi.resp.fire()) { state := s_resp }
 
   when (io.b.fire()) { state := s_idle }
 }
