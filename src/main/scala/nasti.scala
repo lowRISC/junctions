@@ -6,6 +6,7 @@ import scala.math.max
 import scala.collection.mutable.ArraySeq
 import scala.collection.mutable.HashMap
 
+case object MMIOBase extends Field[Int]
 case object NASTIDataBits extends Field[Int]
 case object NASTIAddrBits extends Field[Int]
 case object NASTIIdBits extends Field[Int]
