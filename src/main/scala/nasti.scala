@@ -260,6 +260,36 @@ class NASTIReadDataArbiter(arbN: Int) extends NASTIModule {
   }
 }
 
+/** A slave that send decode error for every request it receives */
+class NASTIErrorSlave extends NASTIModule {
+  val io = new NASTISlaveIO
+
+  val r_queue = Module(new Queue(UInt(width = nastiRIdBits), 2))
+  r_queue.io.enq.valid := io.ar.valid
+  r_queue.io.enq.bits := io.ar.bits.id
+  io.ar.ready := r_queue.io.enq.ready
+  io.r.valid := r_queue.io.deq.valid
+  io.r.bits.id := r_queue.io.deq.bits
+  io.r.bits.resp := Bits("b11")
+  io.r.bits.last := Bool(true)
+  r_queue.io.deq.ready := io.r.ready
+
+  val draining = Reg(init = Bool(false))
+  io.w.ready := draining
+
+  when (io.aw.fire()) { draining := Bool(true) }
+  when (io.w.fire() && io.w.bits.last) { draining := Bool(false) }
+
+  val b_queue = Module(new Queue(UInt(width = nastiWIdBits), 2))
+  b_queue.io.enq.valid := io.aw.valid && !draining
+  b_queue.io.enq.bits := io.aw.bits.id
+  io.aw.ready := b_queue.io.enq.ready && !draining
+  io.b.valid := b_queue.io.deq.valid && !draining
+  io.b.bits.id := b_queue.io.deq.bits
+  io.b.bits.resp := Bits("b11")
+  b_queue.io.deq.ready := io.b.ready && !draining
+}
+
 class NASTIRouter(addrmap: Seq[(Int, Int)]) extends NASTIModule {
   val nSlaves = addrmap.size
 
@@ -271,6 +301,8 @@ class NASTIRouter(addrmap: Seq[(Int, Int)]) extends NASTIModule {
   var ar_ready = Bool(false)
   var aw_ready = Bool(false)
   var w_ready = Bool(false)
+  var r_valid_addr = Bool(false)
+  var w_valid_addr = Bool(false)
 
   addrmap.zip(io.slave).zipWithIndex.foreach { case (((base, size), s), i) =>
     val bound = base + size
@@ -284,6 +316,7 @@ class NASTIRouter(addrmap: Seq[(Int, Int)]) extends NASTIModule {
     s.ar.valid := io.master.ar.valid && ar_match
     s.ar.bits := io.master.ar.bits
     ar_ready = ar_ready || (s.ar.ready && ar_match)
+    r_valid_addr = r_valid_addr || ar_match
 
     val aw_addr = io.master.aw.bits.addr
     val aw_match = aw_addr >= UInt(base) && aw_addr < UInt(bound)
@@ -291,6 +324,7 @@ class NASTIRouter(addrmap: Seq[(Int, Int)]) extends NASTIModule {
     s.aw.valid := io.master.aw.valid && aw_match
     s.aw.bits := io.master.aw.bits
     aw_ready = aw_ready || (s.aw.ready && aw_match)
+    w_valid_addr = w_valid_addr || aw_match
 
     val chosen = Reg(init = Bool(false))
     when (s.aw.fire()) { chosen := Bool(true) }
@@ -301,15 +335,28 @@ class NASTIRouter(addrmap: Seq[(Int, Int)]) extends NASTIModule {
     w_ready = w_ready || (s.w.ready && chosen)
   }
 
-  io.master.ar.ready := ar_ready
-  io.master.aw.ready := aw_ready
-  io.master.w.ready := w_ready
+  val err_slave = Module(new NASTIErrorSlave)
+  err_slave.io.ar.valid := !r_valid_addr && io.master.ar.valid
+  err_slave.io.ar.bits := io.master.ar.bits
+  err_slave.io.aw.valid := !w_valid_addr && io.master.aw.valid
+  err_slave.io.aw.bits := io.master.aw.bits
+  err_slave.io.w.valid := io.master.w.valid
+  err_slave.io.w.bits := io.master.w.bits
 
-  val b_arb = Module(new RRArbiter(new NASTIWriteResponseChannel, nSlaves))
-  val r_arb = Module(new NASTIReadDataArbiter(nSlaves))
+  io.master.ar.ready := ar_ready || (!r_valid_addr && err_slave.io.ar.ready)
+  io.master.aw.ready := aw_ready || (!w_valid_addr && err_slave.io.aw.ready)
+  io.master.w.ready := w_ready || err_slave.io.w.ready
 
-  b_arb.io.in <> io.slave.map(s => s.b)
-  r_arb.io.in <> io.slave.map(s => s.r)
+  val b_arb = Module(new RRArbiter(new NASTIWriteResponseChannel, nSlaves + 1))
+  val r_arb = Module(new NASTIReadDataArbiter(nSlaves + 1))
+
+  for (i <- 0 until nSlaves) {
+    b_arb.io.in(i) <> io.slave(i).b
+    r_arb.io.in(i) <> io.slave(i).r
+  }
+
+  b_arb.io.in(nSlaves) <> err_slave.io.b
+  r_arb.io.in(nSlaves) <> err_slave.io.r
 
   io.master.b <> b_arb.io.out
   io.master.r <> r_arb.io.out
