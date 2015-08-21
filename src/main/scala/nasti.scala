@@ -35,15 +35,6 @@ trait NASTIParameters extends UsesParameters {
     UInt(32) -> UInt(5),
     UInt(64) -> UInt(6),
     UInt(128) -> UInt(7)))
-
-  def opSizeToXSize(s: UInt) = MuxLookup(s, UInt("b111"), Array(
-    MT_B  -> UInt(0),
-    MT_H  -> UInt(1),
-    MT_W  -> UInt(2),
-    MT_D  -> UInt(3),
-    MT_BU -> UInt(0),
-    MT_HU -> UInt(1),
-    MT_WU -> UInt(2)))
 }
 
 abstract class NASTIBundle extends Bundle with NASTIParameters
@@ -165,34 +156,5 @@ class MemIONASTISlaveIOConverter(cacheBlockOffsetBits: Int) extends MIFModule wi
   io.nasti.r.bits.id := io.mem.resp.bits.tag
   io.nasti.r.bits.resp := UInt(0)
   io.mem.resp.ready := io.nasti.r.ready
-}
-
-// a NASTI pipeline stage sometimes used to break critical path
-class NASTIPipe extends NASTIModule {
-  val io = new Bundle {
-    val slave = new NASTISlaveIO
-    val master = new NASTIMasterIO
-  }
-
-  val awPipe = Module(new DecoupledPipe(io.slave.aw.bits))
-  awPipe.io.pi <> io.slave.aw
-  awPipe.io.po <> io.master.aw
-
-  val wPipe = Module(new DecoupledPipe(io.slave.w.bits))
-  wPipe.io.pi <> io.slave.w
-  wPipe.io.po <> io.master.w
-
-  val bPipe = Module(new DecoupledPipe(io.slave.b.bits))
-  bPipe.io.pi <> io.master.b
-  bPipe.io.po <> io.slave.b
-
-  val arPipe = Module(new DecoupledPipe(io.slave.ar.bits))
-  arPipe.io.pi <> io.slave.ar
-  arPipe.io.po <> io.master.ar
-
-  val rPipe = Module(new DecoupledPipe(io.master.r.bits))
-  rPipe.io.pi <> io.master.r
-  rPipe.io.po <> io.slave.r
-
 }
 
