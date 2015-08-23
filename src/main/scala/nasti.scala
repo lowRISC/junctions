@@ -4,12 +4,6 @@ package junctions
 import Chisel._
 import scala.math.max
 
-case object BusId extends Field[String]
-case object NASTIDataBits extends Field[Int]
-case object NASTIAddrBits extends Field[Int]
-case object NASTIIdBits extends Field[Int]
-case object NASTIUserBits extends Field[Int]
-
 trait NASTIParameters extends UsesParameters {
   val nastiXDataBits = params(NASTIDataBits)
   val nastiWStrobeBits = nastiXDataBits / 8
