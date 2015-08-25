@@ -19,6 +19,7 @@ trait NASTIParameters extends UsesParameters {
   val nastiXQosBits = 4
   val nastiXRegionBits = 4
   val nastiXRespBits = 2
+  val nastiHandlers = params(NASTIHandlers)
 
   def bytesToXSize(bytes: UInt) = MuxLookup(bytes, UInt("b111"), Array(
     UInt(1) -> UInt(0),
