@@ -3,7 +3,14 @@
 package junctions
 import Chisel._
 import scala.math.max
+import scala.collection.mutable.ArraySeq
+import scala.collection.mutable.HashMap
 
+case object MMIOBase extends Field[BigInt]
+
+object bigIntPow2 {
+  def apply(in: BigInt): Boolean = in > 0 && ((in & (in-1)) == 0)
+}
 trait NASTIParameters extends UsesParameters {
   val nastiXDataBits = params(NASTIDataBits)
   val nastiWStrobeBits = nastiXDataBits / 8
@@ -211,7 +218,7 @@ class MemIONASTISlaveIOConverter(cacheBlockOffsetBits: Int) extends MIFModule wi
   when (io.nasti.aw.fire()) { b_ok := Bool(false) }
   when (io.nasti.w.fire() && io.nasti.w.bits.last) { b_ok := Bool(true) }
 
-  val id_q = Module(new Queue(UInt(width = nastiWIdBits), 2))
+  val id_q = Module(new Queue(UInt(width = nastiXIdBits), 2))
   id_q.io.enq.valid := io.nasti.aw.valid
   id_q.io.enq.bits := io.nasti.aw.bits.id
   id_q.io.deq.ready := io.nasti.b.ready && b_ok
@@ -390,7 +397,7 @@ class NASTIErrorSlave extends NASTIModule {
   when (io.aw.fire()) { draining := Bool(true) }
   when (io.w.fire() && io.w.bits.last) { draining := Bool(false) }
 
-  val b_queue = Module(new Queue(UInt(width = nastiWIdBits), 2))
+  val b_queue = Module(new Queue(UInt(width = nastiXIdBits), 2))
   b_queue.io.enq.valid := io.aw.valid && !draining
   b_queue.io.enq.bits := io.aw.bits.id
   io.aw.ready := b_queue.io.enq.ready && !draining

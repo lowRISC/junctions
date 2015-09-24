@@ -109,7 +109,7 @@ class SMIIONASTIReadIOConverter(val dataWidth: Int, val addrWidth: Int)
   val nWords = Reg(UInt(width = wordCountBits))
   val nBeats = Reg(UInt(width = nastiXLenBits))
   val addr = Reg(UInt(width = addrWidth))
-  val id = Reg(UInt(width = nastiRIdBits))
+  val id = Reg(UInt(width = nastiXIdBits))
 
   val byteOff = Reg(UInt(width = byteOffBits))
   val sendInd = Reg(init = UInt(0, wordCountBits))
@@ -186,7 +186,7 @@ class SMIIONASTIWriteIOConverter(val dataWidth: Int, val addrWidth: Int)
   assert(!io.aw.valid || io.aw.bits.size >= UInt(byteOffBits),
     "NASTI size must be >= SMI size")
 
-  val id = Reg(UInt(width = nastiWIdBits))
+  val id = Reg(UInt(width = nastiXIdBits))
   val addr = Reg(UInt(width = addrWidth))
 
   def makeStrobe(size: UInt, strb: UInt) = {
