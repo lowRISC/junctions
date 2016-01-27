@@ -1,17 +1,15 @@
 package junctions
 
 import Chisel._
+import cde.{Parameters, Field}
 
-abstract trait POCIConstants
+abstract trait PociConstants
 {
   val SZ_PADDR = 32
   val SZ_PDATA = 32
 }
 
-abstract class POCIBundle extends Bundle with POCIConstants
-abstract class POCIModule extends Module with POCIConstants
-
-class POCIIO extends POCIBundle
+class PociIO extends Bundle
 {
   val paddr = UInt(OUTPUT, SZ_PADDR)
   val pwrite = Bool(OUTPUT)
@@ -23,11 +21,10 @@ class POCIIO extends POCIBundle
   val pslverr = Bool(INPUT)
 }
 
-class HASTItoPOCIBridge extends POCIModule
-{
+class HastiToPociBridge(implicit p: Parameters) extends HastiModule()(p) {
   val io = new Bundle {
-    val in = new HASTISlaveIO
-    val out = new POCIIO
+    val in = new HastiSlaveIO
+    val out = new PociIO
   }
 
   val s_idle :: s_setup :: s_access :: Nil = Enum(UInt(), 3)
@@ -57,7 +54,7 @@ class HASTItoPOCIBridge extends POCIModule
 
   io.out.paddr := haddr_reg
   io.out.pwrite := hwrite_reg(0)
-  io.out.psel := (state != s_idle)
+  io.out.psel := (state =/= s_idle)
   io.out.penable := (state === s_access)
   io.out.pwdata := io.in.hwdata
   io.in.hrdata := io.out.prdata
@@ -65,11 +62,11 @@ class HASTItoPOCIBridge extends POCIModule
   io.in.hresp := io.out.pslverr
 }
 
-class POCIBus(amap: Seq[UInt=>Bool]) extends POCIModule
+class PociBus(amap: Seq[UInt=>Bool]) extends Module
 {
   val io = new Bundle {
-    val master = new POCIIO().flip
-    val slaves = Vec(new POCIIO, amap.size)
+    val master = new PociIO().flip
+    val slaves = Vec(amap.size, new PociIO)
   }
 
   val psels = PriorityEncoderOH(
