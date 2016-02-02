@@ -6,7 +6,6 @@ import scala.math.max
 import scala.collection.mutable.ArraySeq
 import cde.{Parameters, Field}
 
-case object NASTIHandlers extends Field[Int]
 case object BusId extends Field[String]
 case class NastiKey(id: String) extends Field[NastiParameters]
 
@@ -17,6 +16,7 @@ trait HasNastiParameters {
   val external = p(NastiKey(p(BusId)))
   val nastiXDataBits = external.dataBits
   val nastiWStrobeBits = nastiXDataBits / 8
+  val nastiXOffBits = log2Up(nastiWStrobeBits)
   val nastiXAddrBits = external.addrBits
   val nastiWIdBits = external.idBits
   val nastiRIdBits = external.idBits
@@ -35,7 +35,7 @@ trait HasNastiParameters {
   val nastiXQosBits = 4
   val nastiXRegionBits = 4
   val nastiXRespBits = 2
-  val nastiHandlers = p(NASTIHandlers)
+  val nastiHandlers = external.handlers
 
   def bytesToXSize(bytes: UInt) = MuxLookup(bytes, UInt("b111"), Array(
     UInt(1) -> UInt(0),
