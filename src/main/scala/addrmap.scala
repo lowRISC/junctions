@@ -30,7 +30,7 @@ trait HasAddrMapParameters {
   val pgLevelBits = p(PgLevelBits)
   val asIdBits = p(ASIdBits)
 
-  val addrMap = new AddrHashMap(p(GlobalAddrMap))
+  lazy val addrMap = new AddrHashMap(p(GlobalAddrMap))
 }
 
 abstract class MemRegion { def size: BigInt }
