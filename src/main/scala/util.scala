@@ -8,7 +8,17 @@ object bigIntPow2 {
 }
 
 class ParameterizedBundle(implicit p: Parameters) extends Bundle {
-  override def cloneType = this.getClass.getConstructors.head.newInstance(p).asInstanceOf[this.type]
+  override def cloneType = {
+    try {
+      this.getClass.getConstructors.head.newInstance(p).asInstanceOf[this.type]
+    } catch {
+      case e: java.lang.IllegalArgumentException =>
+        throwException("Unable to use ParamaterizedBundle.cloneType on " +
+                       this.getClass + ", probably because " + this.getClass +
+                       "() takes more than one argument.  Consider overriding " +
+                       "cloneType() on " + this.getClass, e)
+    }
+  }
 }
 
 class HellaFlowQueue[T <: Data](val entries: Int)(data: => T) extends Module {
@@ -141,5 +151,145 @@ class JunctionsCountingArbiter[T <: Data](
     when (locked) {
       when (lock_ctr.inc()) { locked := Bool(false) }
     }
+  }
+}
+
+class ReorderQueueWrite[T <: Data](dType: T, tagWidth: Int) extends Bundle {
+  val data = dType.cloneType
+  val tag = UInt(width = tagWidth)
+
+  override def cloneType =
+    new ReorderQueueWrite(dType, tagWidth).asInstanceOf[this.type]
+}
+
+class ReorderEnqueueIO[T <: Data](dType: T, tagWidth: Int)
+  extends DecoupledIO(new ReorderQueueWrite(dType, tagWidth)) {
+
+  override def cloneType =
+    new ReorderEnqueueIO(dType, tagWidth).asInstanceOf[this.type]
+}
+
+class ReorderDequeueIO[T <: Data](dType: T, tagWidth: Int) extends Bundle {
+  val valid = Bool(INPUT)
+  val tag = UInt(INPUT, tagWidth)
+  val data = dType.cloneType.asOutput
+  val matches = Bool(OUTPUT)
+
+  override def cloneType =
+    new ReorderDequeueIO(dType, tagWidth).asInstanceOf[this.type]
+}
+
+class ReorderQueue[T <: Data](dType: T, tagWidth: Int, size: Int)
+    extends Module {
+  val io = new Bundle {
+    val enq = new ReorderEnqueueIO(dType, tagWidth).flip
+    val deq = new ReorderDequeueIO(dType, tagWidth)
+  }
+
+  val roq_data = Reg(Vec(size, dType.cloneType))
+  val roq_tags = Reg(Vec(size, UInt(width = tagWidth)))
+  val roq_free = Reg(init = Vec.fill(size)(Bool(true)))
+
+  val roq_enq_addr = PriorityEncoder(roq_free)
+  val roq_matches = roq_tags.zip(roq_free)
+    .map { case (tag, free) => tag === io.deq.tag && !free }
+  val roq_deq_addr = PriorityEncoder(roq_matches)
+
+  io.enq.ready := roq_free.reduce(_ || _)
+  io.deq.data := roq_data(roq_deq_addr)
+  io.deq.matches := roq_matches.reduce(_ || _)
+
+  when (io.enq.valid && io.enq.ready) {
+    roq_data(roq_enq_addr) := io.enq.bits.data
+    roq_tags(roq_enq_addr) := io.enq.bits.tag
+    roq_free(roq_enq_addr) := Bool(false)
+  }
+
+  when (io.deq.valid) {
+    roq_free(roq_deq_addr) := Bool(true)
+  }
+}
+
+object DecoupledHelper {
+  def apply(rvs: Bool*) = new DecoupledHelper(rvs)
+}
+
+class DecoupledHelper(val rvs: Seq[Bool]) {
+  def fire(exclude: Bool, includes: Bool*) = {
+    (rvs.filter(_ ne exclude) ++ includes).reduce(_ && _)
+  }
+}
+
+class MultiWidthFifo(inW: Int, outW: Int, n: Int) extends Module {
+  val io = new Bundle {
+    val in = Decoupled(Bits(width = inW)).flip
+    val out = Decoupled(Bits(width = outW))
+    val count = UInt(OUTPUT, log2Up(n + 1))
+  }
+
+  if (inW == outW) {
+    val q = Module(new Queue(Bits(width = inW), n))
+    q.io.enq <> io.in
+    io.out <> q.io.deq
+    io.count := q.io.count
+  } else if (inW > outW) {
+    val nBeats = inW / outW
+
+    require(inW % outW == 0, s"MultiWidthFifo: in: $inW not divisible by out: $outW")
+    require(n % nBeats == 0, s"Cannot store $n output words when output beats is $nBeats")
+
+    val wdata = Reg(Vec(n / nBeats, Bits(width = inW)))
+    val rdata = Vec(wdata.flatMap { indat =>
+      (0 until nBeats).map(i => indat(outW * (i + 1) - 1, outW * i)) })
+
+    val head = Reg(init = UInt(0, log2Up(n / nBeats)))
+    val tail = Reg(init = UInt(0, log2Up(n)))
+    val size = Reg(init = UInt(0, log2Up(n + 1)))
+
+    when (io.in.fire()) {
+      wdata(head) := io.in.bits
+      head := head + UInt(1)
+    }
+
+    when (io.out.fire()) { tail := tail + UInt(1) }
+
+    size := MuxCase(size, Seq(
+      (io.in.fire() && io.out.fire()) -> (size + UInt(nBeats - 1)),
+      io.in.fire() -> (size + UInt(nBeats)),
+      io.out.fire() -> (size - UInt(1))))
+
+    io.out.valid := size > UInt(0)
+    io.out.bits := rdata(tail)
+    io.in.ready := size < UInt(n)
+    io.count := size
+  } else {
+    val nBeats = outW / inW
+
+    require(outW % inW == 0, s"MultiWidthFifo: out: $outW not divisible by in: $inW")
+
+    val wdata = Reg(Vec(n * nBeats, Bits(width = inW)))
+    val rdata = Vec.tabulate(n) { i =>
+      Cat(wdata.slice(i * nBeats, (i + 1) * nBeats).reverse)}
+
+    val head = Reg(init = UInt(0, log2Up(n * nBeats)))
+    val tail = Reg(init = UInt(0, log2Up(n)))
+    val size = Reg(init = UInt(0, log2Up(n * nBeats + 1)))
+
+    when (io.in.fire()) {
+      wdata(head) := io.in.bits
+      head := head + UInt(1)
+    }
+
+    when (io.out.fire()) { tail := tail + UInt(1) }
+
+    size := MuxCase(size, Seq(
+      (io.in.fire() && io.out.fire()) -> (size - UInt(nBeats - 1)),
+      io.in.fire() -> (size + UInt(1)),
+      io.out.fire() -> (size - UInt(nBeats))))
+
+    io.count := size >> UInt(log2Up(nBeats))
+    io.out.valid := io.count > UInt(0)
+    io.out.bits := rdata(tail)
+    io.in.ready := size < UInt(n * nBeats)
   }
 }
