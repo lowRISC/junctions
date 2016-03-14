@@ -579,10 +579,13 @@ class NastiRecursiveInterconnect(
         case MemSize(_, _) =>
           io.slaves(slaveInd) <> xbarSlave
           slaveInd += 1
-        case MemSubmap(_, submap) =>
+        case MemSubmap(_, submap, ext) =>
           if (submap.isEmpty) {
             val err_slave = Module(new NastiErrorSlave)
             err_slave.io <> xbarSlave
+          } else if(ext) { // no expension
+            io.slaves(slaveInd) <> xbarSlave
+            slaveInd += 1
           } else {
             val subSlaves = submap.countSlaves
             val outputs = io.slaves.drop(slaveInd).take(subSlaves)
