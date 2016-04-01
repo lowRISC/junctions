@@ -138,13 +138,15 @@ class AddrHashMap(addrmap: AddrMap, start: BigInt) {
   // get the number of internal ports
   private def getInternalPorts(am: AddrMap): Int = {
     var ports = 0
-    am.foreach {
-      case MemSize(_, _) => ports += 1
-      case MemSubmap(_, submap, ext) => {
-        if(ext)
-          ports += 1
-        else {
-          ports += getInternalPorts(submap)
+    am.foreach { case AddrMapEntry(_, _, region) =>
+      region match {
+        case MemSize(_, _) => ports += 1
+        case MemSubmap(_, submap, ext) => {
+          if(ext)
+            ports += 1
+          else {
+            ports += getInternalPorts(submap)
+          }
         }
       }
     }

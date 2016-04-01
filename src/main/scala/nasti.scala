@@ -16,6 +16,7 @@ trait HasNastiParameters {
   val nastiExternal = p(NastiKey(p(BusId)))
   val nastiXDataBits = nastiExternal.dataBits
   val nastiWStrobeBits = nastiXDataBits / 8
+  val nastiXOffBits = log2Up(nastiWStrobeBits)
   val nastiXAddrBits = nastiExternal.addrBits
   val nastiWIdBits = nastiExternal.idBits
   val nastiRIdBits = nastiExternal.idBits
