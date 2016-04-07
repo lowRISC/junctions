@@ -1,4 +1,4 @@
-// See LICENSE for license details.
+/// See LICENSE for license details.
 
 package junctions
 import Chisel._
@@ -9,14 +9,13 @@ import cde.{Parameters, Field}
 case object BusId extends Field[String]
 case class NastiKey(id: String) extends Field[NastiParameters]
 
-case class NastiParameters(dataBits: Int, addrBits: Int, idBits: Int, handlers:Int)
+case class NastiParameters(dataBits: Int, addrBits: Int, idBits: Int)
 
 trait HasNastiParameters {
   implicit val p: Parameters
   val nastiExternal = p(NastiKey(p(BusId)))
   val nastiXDataBits = nastiExternal.dataBits
   val nastiWStrobeBits = nastiXDataBits / 8
-  val nastiXOffBits = log2Up(nastiWStrobeBits)
   val nastiXAddrBits = nastiExternal.addrBits
   val nastiWIdBits = nastiExternal.idBits
   val nastiRIdBits = nastiExternal.idBits
@@ -35,7 +34,6 @@ trait HasNastiParameters {
   val nastiXQosBits = 4
   val nastiXRegionBits = 4
   val nastiXRespBits = 2
-  val nastiHandlers = nastiExternal.handlers
 
   def bytesToXSize(bytes: UInt) = MuxLookup(bytes, UInt("b111"), Array(
     UInt(1) -> UInt(0),
@@ -330,48 +328,6 @@ class NastiArbiter(val arbN: Int)(implicit p: Parameters) extends NastiModule {
     aw_arb.io.out.ready := io.slave.aw.ready && w_done
 
   } else { io.slave <> io.master.head }
-}
-
-/** Locking RR arbiter for NASTI read data channel
- *  Arbiter locks until last message in channel is sent */
-class NASTIReadDataArbiter(arbN: Int)(implicit p: Parameters) extends NastiModule {
-  val io = new Bundle {
-    val in = Vec(arbN, Decoupled(new NastiReadDataChannel)).flip
-    val out = Decoupled(new NastiReadDataChannel)
-  }
-
-  def rotateLeft[T <: Data](norm: Vec[T], rot: UInt): Vec[T] = {
-    val n = norm.size
-    Vec.tabulate(n) { i =>
-      Mux(rot < UInt(n - i), norm(UInt(i) + rot), norm(rot - UInt(n - i)))
-    }
-  }
-
-  val lockIdx = Reg(init = UInt(0, log2Up(arbN)))
-  val locked = Reg(init = Bool(false))
-
-  // use rotation to give priority to the input after the last one granted
-  val choice = PriorityMux(
-    rotateLeft(Vec(io.in.map(_.valid)), lockIdx + UInt(1)),
-    rotateLeft(Vec((0 until arbN).map(UInt(_))), lockIdx + UInt(1)))
-
-  val chosen = Mux(locked, lockIdx, choice)
-
-  for (i <- 0 until arbN) {
-    io.in(i).ready := io.out.ready && chosen === UInt(i)
-  }
-
-  io.out.valid := io.in(chosen).valid
-  io.out.bits := io.in(chosen).bits
-
-  when (io.out.fire()) {
-    when (!locked) {
-      lockIdx := choice
-      locked := !io.out.bits.last
-    } .elsewhen (io.out.bits.last) {
-      locked := Bool(false)
-    }
-  }
 }
 
 /** A slave that send decode error for every request it receives */
