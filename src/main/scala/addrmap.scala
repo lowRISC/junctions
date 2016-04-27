@@ -36,7 +36,7 @@ trait HasAddrMapParameters {
 abstract class MemRegion { def size: BigInt }
 
 case class MemSize(size: BigInt, prot: Int) extends MemRegion
-case class MemSubmap(size: BigInt, entries: AddrMap, external: Boolean = false) extends MemRegion
+case class MemSubmap(size: BigInt, entries: AddrMap, sharePort: Boolean = false) extends MemRegion
 
 object AddrMapConsts {
   val R = 0x1
@@ -76,82 +76,70 @@ object AddrMap {
 }
 
 class AddrHashMap(addrmap: AddrMap, start: BigInt) {
-  val mapping = new HashMap[String, AddrHashMapEntry]
+  val entries = new HashMap[String, AddrHashMapEntry] // all entries in addrMap
+  val ports = new HashMap[String, AddrHashMapEntry]   // all ported entries
+  val ends = new HashMap[String, AddrHashMapEntry]    // all leaf ends
 
-  private def genPairs(am: AddrMap, start: BigInt): Seq[(String, AddrHashMapEntry)] = {
-    var ind = 0
+  private def genPairs(prefix: Option[String], am: AddrMap, start: BigInt, addPort: Boolean = true): Unit = {
     var base = start
-    var pairs = Seq[(String, AddrHashMapEntry)]()
-    am.foreach { case AddrMapEntry(name, startOpt, region) =>
+    am.foreach { case AddrMapEntry(entryName, startOpt, region) =>
+      val name = if(prefix.isEmpty) entryName else prefix.get + ":" + entryName
       region match {
         case MemSize(size, prot) => {
           if (!startOpt.isEmpty) base = startOpt.get
-          pairs = (name, AddrHashMapEntry(ind, base, size, prot)) +: pairs
-          base += size
-          ind += 1
-        }
-        case MemSubmap(size, submap, _) => {
-          if (!startOpt.isEmpty) base = startOpt.get
-          val subpairs = genPairs(submap, base).map {
-            case (subname, AddrHashMapEntry(subind, subbase, subsize, prot)) =>
-              (name + ":" + subname,
-                AddrHashMapEntry(ind + subind, subbase, subsize, prot))
+          val entry = AddrHashMapEntry(ports.size, base, size, prot)
+          entries(name) = entry
+          ends(name) = entry
+          if(addPort) {
+            ports(name) = entry
           }
-          pairs = subpairs ++ pairs
-          ind += subpairs.size
+          base += size
+        }
+        case MemSubmap(size, submap, sharePort) => {
+          if (!startOpt.isEmpty) base = startOpt.get
+          val entry = AddrHashMapEntry(ports.size, base, size, 0)
+          entries(name) = entry
+          if(addPort && sharePort) { // a shared port for the whole subtree
+            ports(name) = entry
+            genPairs(Some(name), submap, base, false)
+          } else {
+            genPairs(Some(name), submap, base, addPort)
+          }
           base += size
         }
       }
     }
-    pairs
   }
 
-  for ((name, ind) <- genPairs(addrmap, start)) { mapping(name) = ind }
+  genPairs(None, addrmap, start)
 
-  def nEntries: Int = mapping.size
-  def apply(name: String): AddrHashMapEntry = mapping(name)
-  def get(name: String): Option[AddrHashMapEntry] = mapping.get(name)
+  def nEntries: Int = ends.size
+  def nPorts:Int = ports.size
+  def apply(name: String): AddrHashMapEntry = entries(name)
+  def get(name: String): Option[AddrHashMapEntry] = entries.get(name)
+
   def sortedEntries(): Seq[(String, BigInt, BigInt, Int)] = {
-    val arr = new Array[(String, BigInt, BigInt, Int)](mapping.size)
-    mapping.foreach { case (name, AddrHashMapEntry(port, base, size, prot)) =>
+    val arr = new Array[(String, BigInt, BigInt, Int)](ports.size)
+    ports.foreach { case (name, AddrHashMapEntry(port, base, size, prot)) =>
       arr(port) = (name, base, size, prot)
     }
     arr.toSeq
   }
 
   def isValid(addr: UInt): Bool = {
-    addr < UInt(start) || sortedEntries().map {
-      case (_, base, size, _) =>
+    ends.map {
+      case (_, AddrHashMapEntry(_, base, size, _)) =>
         addr >= UInt(base) && addr < UInt(base + size)
     }.reduceLeft(_ || _)
   }
 
   def getProt(addr: UInt): AddrMapProt = {
-    val protBits = Mux(addr < UInt(start),
-      Bits(AddrMapConsts.RWX, 3),
-      Mux1H(sortedEntries().map { case (_, base, size, prot) =>
-        (addr >= UInt(base) && addr < UInt(base + size), Bits(prot, 3))
-      }))
+    val protBits =
+      Mux1H(
+        ends.map {
+          case (_, AddrHashMapEntry(_, base, size, prot)) =>
+            (addr >= UInt(base) && addr < UInt(base + size), Bits(prot, 3))
+        })
     new AddrMapProt().fromBits(protBits)
   }
-
-  // get the number of internal ports
-  private def getInternalPorts(am: AddrMap): Int = {
-    var ports = 0
-    am.foreach { case AddrMapEntry(_, _, region) =>
-      region match {
-        case MemSize(_, _) => ports += 1
-        case MemSubmap(_, submap, ext) => {
-          if(ext)
-            ports += 1
-          else {
-            ports += getInternalPorts(submap)
-          }
-        }
-      }
-    }
-    ports
-  }
-
-  def nInternalPorts: Int = getInternalPorts(addrmap)
 }
