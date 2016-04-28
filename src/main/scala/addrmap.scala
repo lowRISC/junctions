@@ -144,4 +144,22 @@ class AddrHashMap(addrmap: AddrMap, start: BigInt) {
         }))
     new AddrMapProt().fromBits(protBits)
   }
+
+}
+
+/** Every elaborated entry ends up in this global arry so it can be printed
+  * out later. */
+object AllDeviceEntries {
+  var entries = new HashMap[String, AddrHashMapEntry]
+
+  def as_c_header(): String = {
+    entries.map { case (name, AddrHashMapEntry(_, base, size, _)) => {
+      val devName = name.replace(':','_')
+      List(
+        "#define DEV_MAP__" + devName + "__BASE 0x%x".format(base),
+        "#define DEV_MAP__" + devName + "__MASK 0x%x".format(size-1)
+      )
+    }
+    }.flatten.mkString("\n") + "\n"
+  }
 }
