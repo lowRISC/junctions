@@ -127,7 +127,7 @@ class AddrHashMap(addrmap: AddrMap, start: BigInt) {
   }
 
   def isValid(addr: UInt): Bool = {
-    ends.map {
+    addr < UInt(start) || ends.map {
       case (_, AddrHashMapEntry(_, base, size, _)) =>
         addr >= UInt(base) && addr < UInt(base + size)
     }.reduceLeft(_ || _)
@@ -135,11 +135,13 @@ class AddrHashMap(addrmap: AddrMap, start: BigInt) {
 
   def getProt(addr: UInt): AddrMapProt = {
     val protBits =
-      Mux1H(
+      Mux(addr < UInt(start),
+        Bits(AddrMapConsts.RWX, 3),
+        Mux1H(
         ends.map {
           case (_, AddrHashMapEntry(_, base, size, prot)) =>
             (addr >= UInt(base) && addr < UInt(base + size), Bits(prot, 3))
-        })
+        }))
     new AddrMapProt().fromBits(protBits)
   }
 }
