@@ -94,6 +94,7 @@ class NastiWriteAddressChannel(implicit p: Parameters) extends NastiAddressChann
 
 class NastiWriteDataChannel(implicit p: Parameters) extends NastiMasterToSlaveChannel()(p)
     with HasNastiData {
+  val id   = UInt(width = nastiWIdBits)
   val strb = UInt(width = nastiWStrobeBits)
   val user = UInt(width = nastiWUserBits)
 }
@@ -168,7 +169,8 @@ object NastiReadAddressChannel {
 }
 
 object NastiWriteDataChannel {
-  def apply(data: UInt, last: Bool = Bool(true))(implicit p: Parameters): NastiWriteDataChannel = {
+  def apply(data: UInt, last: Bool = Bool(true), id: UInt = UInt(0))
+           (implicit p: Parameters): NastiWriteDataChannel = {
     val w = Wire(new NastiWriteDataChannel)
     w.strb := Fill(w.nastiWStrobeBits, UInt(1, 1))
     w.data := data
@@ -176,9 +178,9 @@ object NastiWriteDataChannel {
     w.user := UInt(0)
     w
   }
-  def apply(data: UInt, strb: UInt, last: Bool)
+  def apply(data: UInt, strb: UInt, last: Bool, id: UInt)
            (implicit p: Parameters): NastiWriteDataChannel = {
-    val w = apply(data, last)
+    val w = apply(data, last, id)
     w.strb := strb
     w
   }
@@ -501,57 +503,35 @@ class NastiRecursiveInterconnect(
     val nMasters: Int, val nSlaves: Int,
     addrmap: AddrMap, base: BigInt)
     (implicit p: Parameters) extends NastiInterconnect()(p) {
-  var lastEnd = base
-  var slaveInd = 0
   val levelSize = addrmap.size
-  val realAddrMap = new ArraySeq[(BigInt, BigInt)](addrmap.size)
 
-  addrmap.zipWithIndex.foreach { case (AddrMapEntry(name, startOpt, region), i) =>
-    val start = startOpt.getOrElse(lastEnd)
-    val size = region.size
-
-    require(bigIntPow2(size),
-      s"Region $name size $size is not a power of 2")
-    require(start % size == 0,
-      f"Region $name start address 0x$start%x not divisible by 0x$size%x" )
-    require(start >= lastEnd,
-      f"Region $name start address 0x$start%x before previous region end")
-
-    realAddrMap(i) = (start, size)
-    lastEnd = start + size
-  }
-
+  val addrHashMap = new AddrHashMap(addrmap, base)
   val routeSel = (addr: UInt) => {
-    Vec(realAddrMap.map { case (start, size) =>
-      addr >= UInt(start) && addr < UInt(start + size)
-    }).toBits
+    Cat(addrmap.map { case entry =>
+      val hashEntry = addrHashMap(entry.name)
+      addr >= UInt(hashEntry.start) && addr < UInt(hashEntry.start + hashEntry.region.size)
+    }.reverse)
   }
 
   val xbar = Module(new NastiCrossbar(nMasters, levelSize, routeSel))
   xbar.io.masters <> io.masters
 
-  addrmap.zip(realAddrMap).zip(xbar.io.slaves).zipWithIndex.foreach {
-    case (((entry, (start, size)), xbarSlave), i) => {
+  io.slaves <> addrmap.zip(xbar.io.slaves).flatMap {
+    case (entry, xbarSlave) => {
       entry.region match {
-        case MemSize(_, _) =>
-          io.slaves(slaveInd) <> xbarSlave
-          slaveInd += 1
-        case MemSubmap(_, submap, ext) =>
-          if (submap.isEmpty) {
-            val err_slave = Module(new NastiErrorSlave)
-            err_slave.io <> xbarSlave
-          } else if(ext) { // no expension
-            io.slaves(slaveInd) <> xbarSlave
-            slaveInd += 1
-          } else {
-            val subSlaves = submap.countSlaves
-            val outputs = io.slaves.drop(slaveInd).take(subSlaves)
-            val ic = Module(new NastiRecursiveInterconnect(1, subSlaves, submap, start))
-            ic.io.masters.head <> xbarSlave
-            for ((o, s) <- outputs zip ic.io.slaves)
-              o <> s
-            slaveInd += subSlaves
-          }
+        case _: MemSize =>
+          Some(xbarSlave)
+        case MemSubmap(_, submap, _) if submap.isEmpty =>
+          val err_slave = Module(new NastiErrorSlave)
+          err_slave.io <> xbarSlave
+          None
+        case MemSubmap(_, submap, sharePort) if sharePort =>
+          Some(xbarSlave)
+        case MemSubmap(_, submap, _) =>
+          val subSlaves = submap.countPorts
+          val ic = Module(new NastiRecursiveInterconnect(1, subSlaves, submap, addrHashMap(entry.name).start))
+          ic.io.masters.head <> xbarSlave
+          ic.io.slaves
       }
     }
   }
@@ -683,5 +663,41 @@ class NastiMemorySelector(nBanks: Int, maxMemChannels: Int, configs: Seq[Int])
     disconnectSlave(ic.io.masters)
     muxOnSelect(   io.masters, ic.io.masters, io.select === UInt(select))
     muxOnSelect(ic.io.slaves,     io.slaves,  io.select === UInt(select))
+  }
+}
+
+class NastiMemoryDemux(nRoutes: Int)(implicit p: Parameters) extends NastiModule()(p) {
+  val io = new Bundle {
+    val master = (new NastiIO).flip
+    val slaves = Vec(nRoutes, new NastiIO)
+    val select = UInt(INPUT, log2Up(nRoutes))
+  }
+
+  def connectReqChannel[T <: Data](idx: Int, out: DecoupledIO[T], in: DecoupledIO[T]) {
+    out.valid := in.valid && io.select === UInt(idx)
+    out.bits := in.bits
+    when (io.select === UInt(idx)) { in.ready := out.ready }
+  }
+
+  def connectRespChannel[T <: Data](idx: Int, out: DecoupledIO[T], in: DecoupledIO[T]) {
+    when (io.select === UInt(idx)) { out.valid := in.valid }
+    when (io.select === UInt(idx)) { out.bits := in.bits }
+    in.ready := out.ready && io.select === UInt(idx)
+  }
+
+  io.master.ar.ready := Bool(false)
+  io.master.aw.ready := Bool(false)
+  io.master.w.ready := Bool(false)
+  io.master.r.valid := Bool(false)
+  io.master.r.bits := NastiReadDataChannel(id = UInt(0), data = UInt(0))
+  io.master.b.valid := Bool(false)
+  io.master.b.bits := NastiWriteResponseChannel(id = UInt(0))
+
+  io.slaves.zipWithIndex.foreach { case (slave, i) =>
+    connectReqChannel(i, slave.ar, io.master.ar)
+    connectReqChannel(i, slave.aw, io.master.aw)
+    connectReqChannel(i, slave.w, io.master.w)
+    connectRespChannel(i, io.master.r, slave.r)
+    connectRespChannel(i, io.master.b, slave.b)
   }
 }
