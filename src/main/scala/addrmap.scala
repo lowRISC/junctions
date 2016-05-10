@@ -92,9 +92,9 @@ object AddrMap {
 }
 
 class AddrHashMap(addrmap: AddrMap, start: BigInt = BigInt(0)) {
-  private val ports   = HashMap[String, AddrHashMapEntry]   // all ported entries
-  private val mapping = HashMap[String, AddrHashMapEntry]   // all leaf ends
-  private val subMaps = HashMap[String, AddrHashMapEntry]   // all sub maps
+  private val ports   = HashMap[String, AddrHashMapEntry]()   // all ported entries
+  private val mapping = HashMap[String, AddrHashMapEntry]()   // all leaf ends
+  private val subMaps = HashMap[String, AddrHashMapEntry]()   // all sub maps
 
   private def genPairs(am: AddrMap, start: BigInt, prefix: String, addPort: Boolean = true): Unit = {
     var base = start
@@ -140,7 +140,7 @@ class AddrHashMap(addrmap: AddrMap, start: BigInt = BigInt(0)) {
 
   def isCacheable(addr: UInt): Bool = {
     mapping.map { case (_, AddrHashMapEntry(_, base, region)) =>
-      region.asInstanceOf[MemSize].attr.cacheable && UInt(base) <= addr && addr < UInt(base + region.size)
+      Bool(region.asInstanceOf[MemSize].attr.cacheable) && UInt(base) <= addr && addr < UInt(base + region.size)
     }.foldLeft(Bool(false))(_ || _)
   }
 
@@ -166,11 +166,11 @@ object AllDeviceEntries {
   var entries = new HashMap[String, AddrHashMapEntry]
 
   def as_c_header(): String = {
-    entries.map { case (name, AddrHashMapEntry(_, base, size, _)) => {
+    entries.map { case (name, AddrHashMapEntry(_, base, region)) => {
       val devName = name.replace(':','_')
       List(
         "#define DEV_MAP__" + devName + "__BASE 0x%x".format(base),
-        "#define DEV_MAP__" + devName + "__MASK 0x%x".format(size-1)
+        "#define DEV_MAP__" + devName + "__MASK 0x%x".format(region.size-1)
       )
     }
     }.flatten.mkString("\n") + "\n"

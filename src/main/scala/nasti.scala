@@ -503,7 +503,7 @@ class NastiRecursiveInterconnect(
     val nMasters: Int, val nSlaves: Int,
     addrmap: AddrMap, base: BigInt)
     (implicit p: Parameters) extends NastiInterconnect()(p) {
-  val levelSize = addrmap.size
+  val levelSize = addrmap.countPorts
 
   val addrHashMap = new AddrHashMap(addrmap, base)
   val routeSel = (addr: UInt) => {
