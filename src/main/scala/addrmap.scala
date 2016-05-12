@@ -96,21 +96,20 @@ class AddrHashMap(addrmap: AddrMap, start: BigInt = BigInt(0)) {
   private val mapping = HashMap[String, AddrHashMapEntry]()   // all leaf ends
   private val subMaps = HashMap[String, AddrHashMapEntry]()   // all sub maps
 
-  private def genPairs(am: AddrMap, start: BigInt, prefix: String, addPort: Boolean = true): Unit = {
+  private def genPairs(am: AddrMap, start: BigInt, prefix: String, addPort: Boolean = true): BigInt = {
     var base = start
     am.foreach { ame =>
       val name = prefix + ame.name
       base = (base + ame.region.align - 1) / ame.region.align * ame.region.align
+      val entry = AddrHashMapEntry(ports.size, base, ame.region)
       ame.region match {
       case r: MemSize =>
-        val entry = AddrHashMapEntry(ports.size, base, r)
         mapping += name -> entry
         base += r.size
         if(addPort) {
           ports += name -> entry
         }
       case r: MemSubmap =>
-        val entry = AddrHashMapEntry(ports.size, base, r)
         subMaps += name -> entry
         if(addPort && r.sharePort) { // a shared port for the whole subtree
           ports += name -> entry
@@ -118,11 +117,10 @@ class AddrHashMap(addrmap: AddrMap, start: BigInt = BigInt(0)) {
         genPairs(r.entries, base, name + ":", addPort && !r.sharePort)
         base += r.size
     }}
+    base
   }
 
-  genPairs(addrmap, start, "")
-
-  def size = mapping.size
+  val size = genPairs(addrmap, start, "")
 
   def nPorts: Int = ports.size
   def nEntries: Int = mapping.size
@@ -158,15 +156,8 @@ class AddrHashMap(addrmap: AddrMap, start: BigInt = BigInt(0)) {
     new AddrMapProt().fromBits(protForRegion.reduce(_|_))
   }
 
-}
-
-/** Every elaborated entry ends up in this global arry so it can be printed
-  * out later. */
-object AllDeviceEntries {
-  var entries = new HashMap[String, AddrHashMapEntry]
-
   def as_c_header(): String = {
-    entries.map { case (name, AddrHashMapEntry(_, base, region)) => {
+    mapping.map { case (name, AddrHashMapEntry(_, base, region)) => {
       val devName = name.replace(':','_')
       List(
         "#define DEV_MAP__" + devName + "__BASE 0x%x".format(base),
@@ -175,4 +166,11 @@ object AllDeviceEntries {
     }
     }.flatten.mkString("\n") + "\n"
   }
+
+  def getEntries() = mapping.toSeq
+
 }
+
+/** Every elaborated entry ends up in this global arry so it can be printed
+  * out later. */
+object AllAddrMapEntries extends GlobalMaps[AddrHashMap]

@@ -2,6 +2,7 @@
 package junctions
 import Chisel._
 import cde.Parameters
+import scala.collection.mutable.ArrayBuffer
 
 class ParameterizedBundle(implicit p: Parameters) extends Bundle {
   override def cloneType = {
@@ -288,4 +289,10 @@ class MultiWidthFifo(inW: Int, outW: Int, n: Int) extends Module {
     io.out.bits := rdata(tail)
     io.in.ready := size < UInt(n * nBeats)
   }
+}
+
+abstract class GlobalMaps[T] {
+  private var maps = ArrayBuffer.empty[T]
+  def +=(map: T): Unit = { maps += map }
+  def foreach( f: (T => Unit) ): Unit = { maps.foreach{ m => f(m) } }
 }
