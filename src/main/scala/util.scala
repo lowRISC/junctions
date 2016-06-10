@@ -174,6 +174,8 @@ class ReorderDequeueIO[T <: Data](dType: T, tagWidth: Int) extends Bundle {
 
   override def cloneType =
     new ReorderDequeueIO(dType, tagWidth).asInstanceOf[this.type]
+
+  def mismatch(dummy: Int = 0): Bool = valid && !matches
 }
 
 class ReorderQueue[T <: Data](dType: T, tagWidth: Int, size: Int)
